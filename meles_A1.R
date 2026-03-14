@@ -86,3 +86,25 @@ broadleaf = classify(LCM, RCmatrix)
 # inspect the new data visually
 plot(broadleaf)
 plot(melesFin$geometry, add = TRUE)
+
+
+# characteristic scale
+
+# read in our LSM raster data
+LCM_scale <- rast("LCMUK.tif")
+
+# get coordinates of badger points
+melesCoords <- st_coordinates(meles.sp)
+
+# crop the land cover data to the extent of our points data (plus 5km to allow space for the buffers we will create in subsequent steps)
+x.min <- min(melesCoords[,1]) - 5000
+x.max <- max(melesCoords[,1]) + 5000
+y.min <- min(melesCoords[,2]) - 5000
+y.max <- max(melesCoords[,2]) + 5000
+
+extent.new <- ext(x.min, x.max, y.min, y.max)
+
+LCM_scale <- crop(LCM_scale$LCMUK_1, extent.new)
+
+plot(LCM_scale)
+plot(meles.sp,add = TRUE)
