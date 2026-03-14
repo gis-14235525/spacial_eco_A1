@@ -122,3 +122,56 @@ LCM_scale <- crop(LCM_scale$LCMUK_1, extent.new)
 
 plot(LCM_scale)
 plot(melesFin,add = TRUE)
+
+# Generating (pseudo-)absence points
+set.seed(11)
+back.xy <- spatSample(LCM_scale, size=1000,as.points=TRUE) 
+
+#create a spatialPoints layer from the back.xy matrix
+plot(LCM_scale)
+plot(melesFin,add=TRUE)
+plot(back.xy,add=TRUE, col='red')
+
+# Characterizing point locations
+
+# extract land cover values to our points and plot them to compare presence and absence locations
+eA<-extract(LCM_scale,back.xy)
+eP<-extract(LCM_scale,melesFin)
+
+# calculate point frequency per landcover category
+table(eA[,2])
+table(eP[,2])
+
+# create presence and absence data frames
+Abs <- data.frame(crds(back.xy), Pres = 0)
+head(Abs)
+Pres <- data.frame(crds(melesFin), Pres = 1)
+head(Pres)
+
+# bind the two data frames by row
+melesData <- rbind(Pres, Abs)
+
+# inspect
+head(melesData)
+
+# Re-classifying the raster
+# reclassify original LCM to broadleaf woodland
+LCM_scale <- as.factor(LCM_scale)
+
+levels(LCM_scale)
+
+#create an vector object
+reclass <- c(0, 1, rep(0, 19))
+
+# combine with the LCM categories into a matrix of old and new values
+RCmatrix <- cbind(levels(LCM_scale)[[1]], reclass)
+RCmatrix <- RCmatrix[,2:3]
+RCmatrix <- apply(RCmatrix, 2, FUN = as.numeric)
+
+broadleaf <- classify(LCM_scale, RCmatrix)
+
+# inspect
+plot(broadleaf)
+plot(melesFin, add = TRUE)
+plot(back.xy, add = TRUE, col = "red")
+
