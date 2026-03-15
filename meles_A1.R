@@ -90,25 +90,19 @@ plot(melesFin$geometry, add = TRUE)
 
 # characteristic scale
 
-# use previous badger points, but transform back to EPSG:4326
-meles.scale <- st_transform(meles.sp, 4326)
+# use all cleaned badger points
+meles.scale <- st_as_sf(meles.latlong, coords = c("x","y"), crs = "epsg:4326")
 
 # convert to terra vector 
 meles.scale <- vect(meles.scale)
 
-#First set the exetent to something workable
-studyExtent<-c(-4.2,-2.7,56.5,57.5) #list coordinates in the order: min x, max x, min y, max y
+# read in LCM raster data
+LCM_scale <- rast("LCMUK.tif")
 
-#now crop our points to this area
-C<-crop(meles.scale,studyExtent)
+# project all cleaned badger points to the same CRS as the LCM
+melesFin <- project(meles.scale, crs(LCM_scale))
 
-# read in LSM raster data
-LCM_scale = rast("LCMUK.tif")
-
-# create an object containing the crs information for LCM inside the project
-melesFin<-project(C,crs(LCM_scale))
-
-# crop the land cover data to the extent of our points data (plus 5km to allow space for the buffers we will create in subsequent steps)
+# crop the land cover data to the extent of all badger points (plus 5km to allow space for the buffers we will create in subsequent steps)
 melesCoords<-crds(melesFin)
 
 x.min <- min(melesCoords[,1]) - 5000
@@ -120,48 +114,28 @@ extent.new <- ext(x.min, x.max, y.min, y.max)
 
 LCM_scale <- crop(LCM_scale$LCMUK_1, extent.new)
 
-plot(LCM_scale)
-plot(melesFin,add = TRUE)
 
 # Generating (pseudo-)absence points
 set.seed(11)
 back.xy <- spatSample(LCM_scale, size=1000,as.points=TRUE) 
 
-#create a spatialPoints layer from the back.xy matrix
-plot(LCM_scale)
-plot(melesFin,add=TRUE)
-plot(back.xy,add=TRUE, col='red')
-
-# Characterizing point locations
-
-# extract land cover values to our points and plot them to compare presence and absence locations
-eA<-extract(LCM_scale,back.xy)
-eP<-extract(LCM_scale,melesFin)
-
-# calculate point frequency per landcover category
-table(eA[,2])
-table(eP[,2])
-
 # create presence and absence data frames
 Abs <- data.frame(crds(back.xy), Pres = 0)
-head(Abs)
 Pres <- data.frame(crds(melesFin), Pres = 1)
-head(Pres)
+
 
 # bind the two data frames by row
 melesData <- rbind(Pres, Abs)
 
-# inspect
-head(melesData)
+# convert to sf for buffer analysis
+melesSF <- st_as_sf(melesData, coords = c("x","y"), crs = "EPSG:27700")
 
-# Re-classifying the raster
+
 # reclassify original LCM to broadleaf woodland
 LCM_scale <- as.factor(LCM_scale)
 
-levels(LCM_scale)
-
 #create an vector object
-reclass <- c(0, 1, rep(0, 19))
+reclass <- c(0, 1, rep(0, nrow(levels(LCM_scale)[[1]]) - 2))
 
 # combine with the LCM categories into a matrix of old and new values
 RCmatrix <- cbind(levels(LCM_scale)[[1]], reclass)
@@ -170,8 +144,71 @@ RCmatrix <- apply(RCmatrix, 2, FUN = as.numeric)
 
 broadleaf <- classify(LCM_scale, RCmatrix)
 
-# inspect
-plot(broadleaf)
-plot(melesFin, add = TRUE)
-plot(back.xy, add = TRUE, col = "red")
+#Function for automating whole dataset
+
+landBuffer <- function(speciesData, r){         
+  
+  #buffer each point
+  melesBuffer <- st_buffer(speciesData, dist=r)                     
+  
+  #crop the woodland layer to the buffer extent
+  bufferlandcover <- crop(broadleaf, melesBuffer)              
+  
+  # now extract the raster values (which should all be 1 for woodland and 0 for everything else) within each buffer and sum to get number of woodland cells inside the buffers.
+  masklandcover <- extract(bufferlandcover, melesBuffer,fun="sum")   
+  
+  #get woodland area (625 is the area in metres of each cell of our 25m raster)
+  landcoverArea <- masklandcover$LCMUK_1*625  
+  
+  # convert to precentage cover (we use the st_area() function from the sf package to get the area of our buffer) but convert to a numeric object (because sf applies units i.e. metres which then cant be entered into numeric calculations)
+  percentcover <- landcoverArea/as.numeric(st_area(melesBuffer))*100 
+  
+  # return the result
+  return(percentcover)                                       
+}
+
+# loop
+radii<-seq(100,2000,by=100)
+
+resList=list()
+
+for(i in radii){
+  res.i=landBuffer(speciesData=melesSF,r=i)
+  res.i
+  resList[[i/100]]=res.i
+}
+
+#collect all results together
+resFin=do.call("cbind",resList)
+
+#convert to data frame
+glmData=data.frame(resFin)
+
+#assign more intuitive column names
+colnames(glmData)=paste0("radius",radii)
+
+#add in the presences data
+glmData$Pres<-melesData$Pres
+
+
+#make an empty data frame to then add a sequence of results from glms (general linear models) that test the relationship between broadleaf cover and red squirrel presence for the different buffer sizes
+
+#init empty data frame
+glmRes=data.frame(radius=NA,loglikelihood=NA)
+
+#for loop to iterate over radius values and run a general linear model with glm()
+for(i in radii){
+  n.i=paste0("Pres~","radius",i,sep ="")
+  glm.i=glm(formula(n.i),family = "binomial",data = glmData)
+  ll.i=as.numeric(logLik(glm.i))
+  glmRes=rbind(glmRes,c(i,ll.i))
+}
+
+#remove the NAs in the first row
+glmRes=glmRes[!is.na(glmRes),]
+
+#use the which.max function to subset the dataframe to the just the row containing the max log likelihood value
+opt<-glmRes[which.max(glmRes$loglikelihood),]
+
+
 
