@@ -3,12 +3,16 @@
 
 setwd("./14235525_A1")
 
-#install.packages(c("dismo","glmnet","maxnet","terra","randomForest","sf","rnaturalearth","dplyr","precrec"))
+#install.packages(c("dismo","glmnet","maxnet","terra","randomForest","sf","precrec","mlr"))
 
 # Load the libraries that we will need straight away.
 library(terra)  
 library(sf)      
-library(dismo)   
+library(dismo) 
+library(maxnet)
+library(glmnet)
+library(randomForest)
+library(precrec)
 
 # read in the badger data
 meles <- read.csv("Melesmeles.csv")
@@ -292,11 +296,145 @@ lcm_urban_2300 <- focal(urban, w = weightsMatrixUrban, fun = "sum")
 demScot <- rast("demScotland (1).tif")
 demScot <- terra::resample(demScot, lcm_wood_opt)
 
-#stack the covariate layers together
+# stack the covariate layers together
 allEnv=c(lcm_wood_opt,lcm_urban_2300,demScot)
 names(allEnv)=c("broadleaf","urban","elev")
 
 
+# extract covariates to points
+
+# create background points
+set.seed(11)
+
+# sample background - one point for every cell (9775)
+back = spatSample(allEnv,size=2000,as.points=TRUE,method="random",na.rm=TRUE) 
+back=back[!is.na(back$broadleaf),]
+back=st_as_sf(back,crs="EPSG:27700")
+# get environmental covariates at presence locations
+eP=terra::extract(allEnv,meles_study)
+
+# bind together the presence data using cbind() which binds together objects by column (i.e. with different columns but the same number of rows)
+Pres.cov=st_as_sf(cbind(eP,meles_study))
+Pres.cov$Pres=1
+
+# remove the first column which is just an ID field.
+Pres.cov=Pres.cov[,-1]
+
+# get coordinates for spatial cross-validation later
+coordsPres=st_coordinates(Pres.cov)
+
+# drop geometry column using st_drop_geometry()
+Back.cov=st_as_sf(data.frame(back,Pres=0))
+
+# get coordinates of background points for cross validation later
+coordsBack=st_coordinates(back)
+
+# combine
+coords=data.frame(rbind(coordsPres,coordsBack))
+
+# assign coumn names
+colnames(coords)=c("x","y")
+
+# combine pres and background
+all.cov=rbind(Pres.cov,Back.cov)
+
+# add coordinates
+all.cov=cbind(all.cov,coords)
+
+# remove any NAs and geometry
+all.cov=na.omit(all.cov)
+all.cov <- st_drop_geometry(all.cov)
 
 
+# GLM model
+# specify the model
+glm_badger=glm(Pres~broadleaf+urban+elev,binomial(link='logit'),
+                data=all.cov)
+
+# predict and inspect the output
+prGLM=predict(allEnv,glm_badger,type="response")
+
+# plot
+plot(prGLM)
+
+# build new data frame based on mean of elev and urban but varying values for broadleaf. 
+glmNew=data.frame(broadleaf=seq(0,max(all.cov$broadleaf),length=1000),
+                  elev=mean(all.cov$elev),
+                  urban=mean(all.cov$urban))
+
+
+# use type = "response" for probability-scale predictions and chose to return the standard error of the prediction (se.fit=TRUE)   
+preds = predict(glm_badger, newdata = glmNew, type = "response", se.fit = TRUE)
+glmNew$fit = preds$fit
+glmNew$se = preds$se.fit
+
+head(glmNew)
+
+
+# maxnet evaluation(5folds)
+
+#set number of folds to use
+folds=5
+
+# partition presence and background data and assign to folds using the kfold() function.
+Pres.cov=all.cov[all.cov$Pres==1,]
+Back.cov=all.cov[all.cov$Pres==0,]
+
+kfold_pres = kfold(Pres.cov, folds)
+kfold_back = kfold(Back.cov, folds)
+
+eMax=list()
+
+for (i in 1:folds) {
+  train = Pres.cov[kfold_pres!= i,]
+  test = Pres.cov[kfold_pres == i,]
+  backTrain=Back.cov[kfold_back!=i,]
+  backTest=Back.cov[kfold_back==i,]
+  dataTrain=rbind(train,backTrain)
+  dataTest=rbind(test,backTest)
+  maxnetMod=maxnet(dataTrain$Pres, dataTrain[, c("broadleaf", "urban", "elev")],
+                   maxnet.formula(dataTrain$Pres, dataTrain[, vars], classes = "lq"))
+  
+  pred_p <- predict(maxnetMod, dataTest[dataTest$Pres == 1, vars], type = "cloglog")
+  pred_a <- predict(maxnetMod, dataTest[dataTest$Pres == 0, vars], type = "cloglog")
+  
+  eMax[[i]] <- evaluate(p = pred_p, a = pred_a)
+}
+
+
+#print the result
+aucMax = sapply(eMax, function(x){slot(x, 'auc')} )
+print(mean(aucMax))
+
+Opt_Max = sapply(eMax, function(x){ x@t[which.max(x@TPR + x@TNR)] })
+Mean_OptMax = mean(Opt_Max)
+print(Mean_OptMax)
+
+
+# maxnet model
+maxnet_badger <- maxnet(
+  st_drop_geometry(all.cov)$Pres,
+  st_drop_geometry(all.cov)[, c("broadleaf", "urban", "elev")],
+  maxnet.formula(
+    st_drop_geometry(all.cov)$Pres,
+    st_drop_geometry(all.cov)[, c("broadleaf", "urban", "elev")],
+    classes = "lq"
+  )
+)
+
+plot(maxnet_badger, type = "cloglog")
+
+# maxnet prediction map
+prMax <- terra::predict(allEnv, maxnet_badger, clamp = FALSE, type = "cloglog", na.rm = TRUE)
+
+plot(prMax, main = "Maxnet cloglog prediction")
+plot(meles_study, add = TRUE)
+
+# maxnet presence or absence map
+maxPA <- prMax > Mean_OptMax
+par(mfrow = c(1,2))
+plot(prMax, main = "Maxnet probability")
+plot(maxPA, main = "Maxnet presence/absence")
+plot(meles_study, add = TRUE)
+par(mfrow = c(1,1))
 
