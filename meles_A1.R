@@ -3,7 +3,7 @@
 
 setwd("./14235525_A1")
 
-install.packages(c("dismo","glmnet","maxnet","terra","randomForest","sf","rnaturalearth","dplyr","precrec"))
+#install.packages(c("dismo","glmnet","maxnet","terra","randomForest","sf","rnaturalearth","dplyr","precrec"))
 
 # Load the libraries that we will need straight away.
 library(terra)  
@@ -12,12 +12,6 @@ library(dismo)
 
 # read in the badger data
 meles <- read.csv("Melesmeles.csv")
-
-# view the first six rows of the data
-head(meles)
-
-#check the class of the loaded .csv file.
-class(meles)
 
 # remove records with missing latitude and longtitude values
 meles <- meles[!is.na(meles$Latitude),]
@@ -53,14 +47,13 @@ LCM=aggregate(LCM$LCMUK_1,fact=4,fun="modal")
 meles.sp=st_transform(meles.sp,crs(LCM))
 
 # crop the badger points to the study area
-melesFin=meles.sp[scot,]
+meles_study=meles.sp[scot,]
 
 # mask the LCM to the study area boundary
 LCM=crop(LCM,scot,mask=TRUE)
 
-# inspect
 plot(LCM)
-plot(melesFin$geometry,add=T)
+plot(meles_study, add = TRUE)
 
 # Re-classifying the raster
 
@@ -85,43 +78,32 @@ broadleaf = classify(LCM, RCmatrix)
 
 # inspect the new data visually
 plot(broadleaf)
-plot(melesFin$geometry, add = TRUE)
+plot(meles_study, add = TRUE)
 
 
 # characteristic scale
 
-# use all cleaned badger points
-meles.scale <- st_as_sf(meles.latlong, coords = c("x","y"), crs = "epsg:4326")
+# convert study-area badger points to terra vector
+melesScale <- vect(meles_study)
 
-# convert to terra vector 
-meles.scale <- vect(meles.scale)
-
-# read in LCM raster data
+# read LCM raster
 LCM_scale <- rast("LCMUK.tif")
 
-# project all cleaned badger points to the same CRS as the LCM
-melesFin <- project(meles.scale, crs(LCM_scale))
-
-# crop the land cover data to the extent of all badger points (plus 5km to allow space for the buffers we will create in subsequent steps)
-melesCoords<-crds(melesFin)
-
-x.min <- min(melesCoords[,1]) - 5000
-x.max <- max(melesCoords[,1]) + 5000
-y.min <- min(melesCoords[,2]) - 5000
-y.max <- max(melesCoords[,2]) + 5000
-
-extent.new <- ext(x.min, x.max, y.min, y.max)
-
-LCM_scale <- crop(LCM_scale$LCMUK_1, extent.new)
+# crop LCM to study area(test a 100-2000m buffer around the study area)
+LCM_scale <- crop(LCM_scale, st_buffer(scot, dist = 2000))
+LCM_scale <- LCM_scale$LCMUK_1
 
 
 # Generating (pseudo-)absence points
+# generate pseudo-absence points inside the study area
+sampleMask <- crop(LCM_scale, scot, mask = TRUE)
+
 set.seed(11)
-back.xy <- spatSample(LCM_scale, size=1000,as.points=TRUE) 
+back.xy <- spatSample(sampleMask, size=2000,as.points=TRUE, na.rm = TRUE)
 
 # create presence and absence data frames
 Abs <- data.frame(crds(back.xy), Pres = 0)
-Pres <- data.frame(crds(melesFin), Pres = 1)
+Pres <- data.frame(crds(melesScale), Pres = 1)
 
 
 # bind the two data frames by row
@@ -143,6 +125,9 @@ RCmatrix <- RCmatrix[,2:3]
 RCmatrix <- apply(RCmatrix, 2, FUN = as.numeric)
 
 broadleaf <- classify(LCM_scale, RCmatrix)
+plot(crop(broadleaf, scot, mask = TRUE))
+plot(melesScale, add = TRUE)
+plot(back.xy, add = TRUE, col = "red", pch = 16, cex = 0.4)
 
 #Function for automating whole dataset
 
