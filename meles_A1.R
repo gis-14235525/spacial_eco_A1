@@ -14,7 +14,7 @@ library(glmnet)
 library(randomForest)
 library(precrec)
 
-# read in the badger data
+# 1.read in the badger data
 meles <- read.csv("Melesmeles.csv")
 
 # remove records with missing latitude and longtitude values
@@ -35,7 +35,8 @@ meles.latlong=data.frame(x=meles$Longitude,y=meles$Latitude)
 # use coordinates object to create our spatial points object
 meles.sp=st_as_sf(meles.latlong,coords=c("x","y"),crs="epsg:4326")
 
-# load in the study area polygon
+
+# 2.load in the study area polygon
 scot=st_read("scotSamp.shp")
 
 # load in the land cover map and clip to the study area 
@@ -56,17 +57,12 @@ meles_study=meles.sp[scot,]
 # mask the LCM to the study area boundary
 LCM=crop(LCM,scot,mask=TRUE)
 
-plot(LCM)
-plot(meles_study, add = TRUE)
 
-# Re-classifying the raster
-
+# 3.Re-classifying the raster
 # access levels of the raster by treating them as categorical data
 LCM = as.factor(LCM)
-
 levels(LCM)
-
-# create a vector object called reclass
+# broadleaf raster
 reclass = c(0,1,rep(0,20))
 
 # combine with the LCM categories into a matrix of old and new values
@@ -80,13 +76,7 @@ RCmatrix = apply(RCmatrix, 2, FUN = as.numeric)
 # use the classify() function to assign new values
 broadleaf = classify(LCM, RCmatrix)
 
-# inspect the new data visually
-plot(broadleaf)
-plot(meles_study, add = TRUE)
-
-
-# characteristic scale
-
+# 4.characteristic scale
 # convert study-area badger points to terra vector
 melesScale <- vect(meles_study)
 
@@ -103,19 +93,17 @@ LCM_scale <- LCM_scale$LCMUK_1
 sampleMask <- crop(LCM_scale, scot, mask = TRUE)
 
 set.seed(11)
-back.xy <- spatSample(sampleMask, size=2000,as.points=TRUE, na.rm = TRUE)
+back.xy <- spatSample(sampleMask, size=1000,as.points=TRUE, na.rm = TRUE)
 
 # create presence and absence data frames
 Abs <- data.frame(crds(back.xy), Pres = 0)
 Pres <- data.frame(crds(melesScale), Pres = 1)
-
 
 # bind the two data frames by row
 melesData <- rbind(Pres, Abs)
 
 # convert to sf for buffer analysis
 melesSF <- st_as_sf(melesData, coords = c("x","y"), crs = "EPSG:27700")
-
 
 # reclassify original LCM to broadleaf woodland
 LCM_scale <- as.factor(LCM_scale)
@@ -201,23 +189,9 @@ opt<-glmRes[which.max(glmRes$loglikelihood),]
 
 
 
-# set environmental covariates
+# 5.set environmental covariates
 
-# 1.create woodland covariate at optimum radius
-# create an vector object called reclass
-reclass = c(rep(0,20),1,1)
-
-# combine with the LCM categories into a matrix of old and new values.
-RCmatrix=cbind(levels(LCM)[[1]],reclass)
-RCmatrix=RCmatrix[,2:3]
-
-# apply function to make sure new columns are numeric (here the "2" specifies that we want to apply the as.numeric function to columns, where "1" would have specified rows)
-RCmatrix=apply(RCmatrix,2,FUN=as.numeric)
-
-# Use the classify() function to asssign new values to LCM with our reclassification matrix
-broadleaf=classify(LCM, RCmatrix)
-
-# broadleaf focal layer at optimum radius
+# 5.1.create woodland covariate at optimum radius
 nPix=round((opt$radius)/res(LCM)[1])
 nPix=(nPix*2)+1
 
@@ -256,7 +230,7 @@ weightsMatrix[!is.na(weightsMatrix)]=1/length(weightsMatrix[!is.na(weightsMatrix
 #sum neighbourhood values from all surrounding cells
 lcm_wood_opt=focal(broadleaf,w=weightsMatrix,fun="sum")
 
-# 2.create urban covariate at 2300m as practice
+# 5.2.create urban covariate at 2300m as practice
 reclassUrban <- c(rep(0, 20), 1, 1)
 
 RCmatrixUrban <- cbind(levels(LCM)[[1]], reclassUrban)
@@ -301,7 +275,7 @@ allEnv=c(lcm_wood_opt,lcm_urban_2300,demScot)
 names(allEnv)=c("broadleaf","urban","elev")
 
 
-# extract covariates to points
+# 6.extract covariates to points
 
 # create background points
 set.seed(11)
@@ -317,36 +291,16 @@ eP=terra::extract(allEnv,meles_study)
 Pres.cov=st_as_sf(cbind(eP,meles_study))
 Pres.cov$Pres=1
 
-# remove the first column which is just an ID field.
-Pres.cov=Pres.cov[,-1]
+Pres.cov=Pres.cov[, -1]
 
-# get coordinates for spatial cross-validation later
-coordsPres=st_coordinates(Pres.cov)
+Back.cov=st_as_sf(data.frame(back, Pres = 0))
 
-# drop geometry column using st_drop_geometry()
-Back.cov=st_as_sf(data.frame(back,Pres=0))
-
-# get coordinates of background points for cross validation later
-coordsBack=st_coordinates(back)
-
-# combine
-coords=data.frame(rbind(coordsPres,coordsBack))
-
-# assign coumn names
-colnames(coords)=c("x","y")
-
-# combine pres and background
-all.cov=rbind(Pres.cov,Back.cov)
-
-# add coordinates
-all.cov=cbind(all.cov,coords)
-
-# remove any NAs and geometry
+all.cov=rbind(Pres.cov, Back.cov)
 all.cov=na.omit(all.cov)
-all.cov <- st_drop_geometry(all.cov)
+all.cov=st_drop_geometry(all.cov)
 
 
-# GLM model
+# 7.GLM model
 # specify the model
 glm_badger=glm(Pres~broadleaf+urban+elev,binomial(link='logit'),
                 data=all.cov)
@@ -354,87 +308,107 @@ glm_badger=glm(Pres~broadleaf+urban+elev,binomial(link='logit'),
 # predict and inspect the output
 prGLM=predict(allEnv,glm_badger,type="response")
 
-# plot
-plot(prGLM)
-
 # build new data frame based on mean of elev and urban but varying values for broadleaf. 
 glmNew=data.frame(broadleaf=seq(0,max(all.cov$broadleaf),length=1000),
                   elev=mean(all.cov$elev),
                   urban=mean(all.cov$urban))
-
 
 # use type = "response" for probability-scale predictions and chose to return the standard error of the prediction (se.fit=TRUE)   
 preds = predict(glm_badger, newdata = glmNew, type = "response", se.fit = TRUE)
 glmNew$fit = preds$fit
 glmNew$se = preds$se.fit
 
-head(glmNew)
 
-
-# maxnet evaluation(5folds)
+# glm evaluation(5folds)
 
 #set number of folds to use
 folds=5
 
 # partition presence and background data and assign to folds using the kfold() function.
-Pres.cov=all.cov[all.cov$Pres==1,]
-Back.cov=all.cov[all.cov$Pres==0,]
+Pres.glm=all.cov[all.cov$Pres==1,]
+Back.glm=all.cov[all.cov$Pres==0,]
 
-kfold_pres = kfold(Pres.cov, folds)
-kfold_back = kfold(Back.cov, folds)
+kfold_pres_glm = kfold(Pres.cov, folds)
+kfold_back_glm = kfold(Back.cov, folds)
 
-eMax=list()
+eGLM=list()
 
-for (i in 1:folds) {
-  train = Pres.cov[kfold_pres!= i,]
-  test = Pres.cov[kfold_pres == i,]
-  backTrain=Back.cov[kfold_back!=i,]
-  backTest=Back.cov[kfold_back==i,]
-  dataTrain=rbind(train,backTrain)
-  dataTest=rbind(test,backTest)
-  maxnetMod=maxnet(dataTrain$Pres, dataTrain[, c("broadleaf", "urban", "elev")],
-                   maxnet.formula(dataTrain$Pres, dataTrain[, vars], classes = "lq"))
+vars <- c("broadleaf", "urban", "elev")
+
+for(i in 1:folds){
+  train=Pres.glm[kfold_pres_glm != i, ]
+  test=Pres.glm[kfold_pres_glm == i, ]
+  backTrain=Back.glm[kfold_back_glm != i, ]
+  backTest=Back.glm[kfold_back_glm == i, ]
+  dataTrain=rbind(train, backTrain)
+  dataTest=rbind(test, backTest)
+  glm_i=glm(Pres ~ broadleaf + urban + elev,
+               binomial(link = "logit"),
+               data = dataTrain)
   
-  pred_p <- predict(maxnetMod, dataTest[dataTest$Pres == 1, vars], type = "cloglog")
-  pred_a <- predict(maxnetMod, dataTest[dataTest$Pres == 0, vars], type = "cloglog")
+  pred_p=predict(glm_i, newdata = dataTest[dataTest$Pres == 1, ], type = "response")
+  pred_a=predict(glm_i, newdata = dataTest[dataTest$Pres == 0, ], type = "response")
   
-  eMax[[i]] <- evaluate(p = pred_p, a = pred_a)
+  eGLM[[i]]=evaluate(p = pred_p, a = pred_a)
 }
 
 
 #print the result
-aucMax = sapply(eMax, function(x){slot(x, 'auc')} )
-print(mean(aucMax))
+aucGLM=sapply(eGLM, function(x){slot(x, 'auc')} )
+Mean_AucGLM=mean(aucGLM)
 
-Opt_Max = sapply(eMax, function(x){ x@t[which.max(x@TPR + x@TNR)] })
-Mean_OptMax = mean(Opt_Max)
-print(Mean_OptMax)
+Opt_GLM=sapply(eGLM, function(x){ x@t[which.max(x@TPR + x@TNR)] })
+Mean_OptGLM=mean(Opt_GLM)
+
+glmPA=prGLM > Mean_OptGLM
 
 
-# maxnet model
-maxnet_badger <- maxnet(
-  st_drop_geometry(all.cov)$Pres,
-  st_drop_geometry(all.cov)[, c("broadleaf", "urban", "elev")],
-  maxnet.formula(
-    st_drop_geometry(all.cov)$Pres,
-    st_drop_geometry(all.cov)[, c("broadleaf", "urban", "elev")],
-    classes = "lq"
+# 8.maxnet model
+Pres.max=all.cov[all.cov$Pres == 1, ]
+Back.max=all.cov[all.cov$Pres == 0, ]
+
+kfold_pres=kfold(Pres.max, folds)
+kfold_back=kfold(Back.max, folds)
+
+eMax=list()
+
+for(i in 1:folds){
+  train=Pres.max[kfold_pres != i, ]
+  test=Pres.max[kfold_pres == i, ]
+  
+  backTrain=Back.max[kfold_back != i, ]
+  backTest=Back.max[kfold_back == i, ]
+  
+  dataTrain=rbind(train, backTrain)
+  dataTest=rbind(test, backTest)
+  
+  maxnetMod=maxnet(
+    dataTrain$Pres,
+    dataTrain[, vars],
+    maxnet.formula(dataTrain$Pres, dataTrain[, vars], classes = "lq")
   )
+  
+  pred_p=predict(maxnetMod, dataTest[dataTest$Pres == 1, vars], type = "cloglog")
+  pred_a=predict(maxnetMod, dataTest[dataTest$Pres == 0, vars], type = "cloglog")
+  
+  eMax[[i]]=evaluate(p = pred_p, a = pred_a)
+}
+
+aucMax=sapply(eMax, function(x){slot(x, "auc")})
+Mean_AucMax=mean(aucMax)
+
+Opt_Max=sapply(eMax, function(x){ x@t[which.max(x@TPR + x@TNR)] })
+Mean_OptMax=mean(Opt_Max)
+
+maxnet_badger=maxnet(
+  all.cov$Pres,
+  all.cov[, vars],
+  maxnet.formula(all.cov$Pres, all.cov[, vars], classes = "lq")
 )
 
-plot(maxnet_badger, type = "cloglog")
+prMax=predict(allEnv, maxnet_badger, clamp = FALSE, type = "cloglog", na.rm = TRUE)
+maxPA=prMax > Mean_OptMax
 
-# maxnet prediction map
-prMax <- terra::predict(allEnv, maxnet_badger, clamp = FALSE, type = "cloglog", na.rm = TRUE)
 
-plot(prMax, main = "Maxnet cloglog prediction")
-plot(meles_study, add = TRUE)
 
-# maxnet presence or absence map
-maxPA <- prMax > Mean_OptMax
-par(mfrow = c(1,2))
-plot(prMax, main = "Maxnet probability")
-plot(maxPA, main = "Maxnet presence/absence")
-plot(meles_study, add = TRUE)
-par(mfrow = c(1,1))
 
