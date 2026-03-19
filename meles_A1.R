@@ -214,7 +214,7 @@ names(allEnv)=c("broadleaf","urban","elev")
 # create background points
 set.seed(11)
 
-# sample background - one point for every cell (9775)
+# # sample 2000 background points
 back = spatSample(allEnv,size=2000,as.points=TRUE,method="random",na.rm=TRUE) 
 back=back[!is.na(back$broadleaf),]
 back=st_as_sf(back,crs="EPSG:27700")
